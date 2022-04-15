@@ -46,7 +46,7 @@ class ShampooAttackViT(Attack):
         loss = nn.CrossEntropyLoss()
 
         advimages = images.clone().detach().to(self.device)
-        print(advimages.shape)
+        # print(advimages.shape)
 
         # split images into patches
             # for each image, 
@@ -55,7 +55,7 @@ class ShampooAttackViT(Attack):
         # attack using Shampoo Optimizer Matrix Case https://arxiv.org/pdf/1802.09568.pdf
 
         # initializing precondition matrices
-        preconds = torch.zeros(advimages.shape[0], self.patch_num_side, self.patch_num_side, 6, self.patch_sidelen, self.patch_sidelen)
+        preconds = torch.zeros(advimages.shape[0], self.patch_num_side, self.patch_num_side, 6, self.patch_sidelen, self.patch_sidelen).to(self.device)
         for i in range(advimages.shape[0]):
             for j in range(self.patch_num_side):
                 for k in range(self.patch_num_side):
@@ -77,8 +77,8 @@ class ShampooAttackViT(Attack):
                 cost = loss(outputs, labels)
 
             grad = torch.autograd.grad(cost, advimages,
-                    retain_graph=False, create_graph=False)[0]
-            print(f"grad shape: {grad.shape}")
+                    retain_graph=False, create_graph=False)[0].to(self.device)
+            # print(f"grad shape: {grad.shape}")
             
             advimages.requires_grad = False
 
@@ -86,7 +86,7 @@ class ShampooAttackViT(Attack):
                 for j in range(self.patch_num_side):
                     for k in range(self.patch_num_side):
                         gradient_block = grad[i, :, j*self.patch_sidelen:(j+1)*self.patch_sidelen, k*self.patch_sidelen:(k+1)*self.patch_sidelen]
-                        print(f"Update Iteration: {_+1}, image NO.{i+1}, patch NO.{j+1}-{k+1} -- {self.patch_num_side}-{self.patch_num_side}")
+                        # print(f"Update Iteration: {_+1}, image NO.{i+1}, patch NO.{j+1}-{k+1} -- {self.patch_num_side}-{self.patch_num_side}")
                         preconds[i][j][k][0] = preconds[i][j][k][0] + gradient_block[0, :, :] @ gradient_block[0, :, :].t()   # update L Red
                         preconds[i][j][k][1] = preconds[i][j][k][1] + gradient_block[1, :, :] @ gradient_block[1, :, :].t()   # update L Green
                         preconds[i][j][k][2] = preconds[i][j][k][2] + gradient_block[2, :, :] @ gradient_block[2, :, :].t()   # update L Blue
