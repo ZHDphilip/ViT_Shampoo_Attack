@@ -124,7 +124,7 @@ class ShampooAttackViT_Tensor(Attack):
                     # grad (dim, -1)
                     grad = grad.view(transposed_size)
 
-            advimages = advimages - self.lr*grad
+            advimages = advimages - self.lr*torch.sign(grad)
             # print(f"adv shape: {advimages.shape}")
             # print(f"grad shape: {grad.shape}")
             advimages = apply_reshape_backward(advimages, self.patch_num_side, self.patch_sidelen)
