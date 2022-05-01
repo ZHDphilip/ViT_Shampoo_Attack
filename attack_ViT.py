@@ -157,7 +157,7 @@ if __name__ == "__main__":
     parser.add_argument("--PGD", type=int, default=0, help="to use PGD bench mark or not")
     parser.add_argument("--eps_low", type=float, default=2, help="test eps starts from arg/255")
     parser.add_argument("--nstep", type=int, default=3, \
-      help="number of times to multiply eps by 2 for testing, eg eps_low=2/255 nstep=3 will test on eps=[2/255,4/255,8/255]")
+      help="number of steps to increase eps for testing, eg eps_low=2/255 nstep=3 will test on eps=[2/255,4/255,6/255]")
     parser.add_argument("--max_img", type=int, default=10000, help="number of images to attack for each set of parameter")
     parser.add_argument("--iter", type=int, default=10, help="number of iterations in PGD or Shampoo attack")
     args = parser.parse_args()
