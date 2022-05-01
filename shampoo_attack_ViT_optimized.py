@@ -14,13 +14,20 @@ def _matrix_power(matrix, power):
     return (u @ s.pow_(power).diag() @ v.t())#.cuda()
 
 def _batch_matrix_power(matrix, power):
-    print(matrix.shape)
-    ret = torch.zeros_like(matrix)
-    for i in range(matrix.shape[0]):
-        for j in range(matrix.shape[1]):
-            for k in range(matrix.shape[2]):
-                ret[i,j,k,:,:] = _matrix_power(matrix[i,j,k,:,:], power)
-    return ret
+    # print(matrix.shape)
+    # ret = torch.zeros_like(matrix)
+    # for i in range(matrix.shape[0]):
+    #     for j in range(matrix.shape[1]):
+    #         for k in range(matrix.shape[2]):
+    #             ret[i,j,k,:,:] = _matrix_power(matrix[i,j,k,:,:], power)
+
+    ret = matrix.view(-1, matrix.shape[-2], matrix.shape[-1])
+    res = torch.zeros_like(ret)
+    for i in range(len(ret)):
+      res[i] = _matrix_power(ret[i], power)
+    res = res.view(matrix.shape)
+
+    return res
 
 def apply_reshape_forward(tensor, patch_num_side, patch_sidelen):
     return tensor.view(-1, 3, patch_num_side, patch_sidelen, patch_num_side, patch_sidelen).permute(0, 1, 2, 4, 3, 5)

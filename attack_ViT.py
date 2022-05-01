@@ -1,33 +1,31 @@
-import time 
-
-import ml_collections
+import time
 
 import argparse
 
+import ml_collections
+
 from shampoo_attack_ViT import ShampooAttackViT
-from shampoo_attack_ViT_Tensor import ShampooAttackViT_Tensor
 from shampoo_attack_ViT_optimized import ShampooAttackViT_opt
 
 from models.modeling import VisionTransformer
 
+from torchvision.utils import save_image
+import torchattacks
+import os
+
 import torch
 import torch.nn as nn
+import numpy as np
 
 from tqdm import tqdm
 
 from PIL import Image
-import timm
+# import timm
 import torchvision
 import torchvision.transforms as transforms
-from torchvision.utils import save_image
-from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+# from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 import matplotlib.pyplot as plt
-import numpy as np
-
-import os, os.path
-
-import json
 
 def get_b16_config():
     """Returns the ViT-B/16 configuration."""
@@ -44,24 +42,19 @@ def get_b16_config():
     config.representation_size = None
     return config
 
-# ImageNet class dict
-# jsfile = open("../imagenet_class_index.json")
-# classes = json.load(jsfile)
-# jsfile.close()
-
-# CIFAR10 class dict
 classes = ['plane', 'car', 'bird', 'cat',
            'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
 
-def run():
-    # ImageNet Pretrained Deit
-    # model = torch.hub.load('facebookresearch/deit:main', 'deit_base_patch16_224', pretrained=True)
+def run(benchmark, eps, max_img):
+    # for ImageNet pretrained Deit
+    # model = torch.hub.load('facebookresearch/deit:main', 'deit_base_patch16_224', pretrained=True).cuda()
     # model.eval()
 
-    # CIFAR10 Pretrained ViT
+    # for CIFAR10 Pretrained ViT
     configs = get_b16_config()
     model = VisionTransformer(configs, 224, zero_head=True, num_classes=10)
-    model.load_state_dict(torch.load("../cifar10-100_500_checkpoint.pt", map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load("../cifar10-100_500_checkpoint.pt"))
+    model.to("cuda:0")
     model.eval()
 
     transform = transforms.Compose([
@@ -71,37 +64,30 @@ def run():
         # imagenet
         # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         # cifar10
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
 
     batch_size = 4
     
-    # load Tiny ImageNet
-    # trainset = torchvision.datasets.ImageFolder(root='../Tiny_ImageNet/val', transform=transform)
-    # trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,
-                                            # shuffle=True, num_workers=2)
-
     # load CIFAR10
-    trainset = torchvision.datasets.CIFAR10(root="./data", train=True,
+    trainset = torchvision.datasets.CIFAR10(root="./data", train=False,
                                         download=True, transform=transform)
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,
                                           shuffle=True, num_workers=2)
 
-
-    # f = open("../attack_soft_output.txt", 'a')
-
     print(os.listdir("../original_img"))
     print([name for name in os.listdir("../original_img") if "png" in name])
     namecounter = len([name for name in os.listdir("../original_img") if "png" in name])
-    # original_count = namecounter
-    print(namecounter)
 
-    #  testing version #
-    for e in [2/255, 4/255, 8/255]:
+    # initialize Shampoo Attacker
+    for e in eps:
       # for s in [1/255, 2/255, 4/255]:
       s = e / 4
       print(f"experiment with epsilon = {e}, step size = {s}")
-      atk = ShampooAttackViT_opt(model, 224, 16, steps=10, perturb_bound=e, lr=s)
+      if benchmark:
+          atk = torchattacks.PGD(model, eps=e, alpha=s, steps=10)
+      else:
+          atk = ShampooAttackViT_opt(model, 224, 16, steps=10, perturb_bound=e, lr=s)
 
       success = 0
       num_examples = 0
@@ -110,12 +96,14 @@ def run():
       std = []
 
       for data, label in tqdm(trainloader):
-
-          advinputs, original_input = atk(data, label)
-
-          mean.append(torch.mean(advinputs-original_input).cpu())
-          std.append(torch.std(advinputs-original_input).cpu())
-          Maxdiff = torch.max(advinputs-original_input)
+          data = data.to("cuda:0")
+          advinputs = atk(data, label)
+          # print(data)
+          # print(advinputs)
+          # exit()
+          mean.append(torch.mean(advinputs-data).cpu())
+          std.append(torch.std(advinputs-data).cpu())
+          Maxdiff = torch.max(advinputs-data)
 
           adv_output = model(advinputs)
           adv_labels = torch.argmax(adv_output, dim=1)
@@ -127,130 +115,54 @@ def run():
           for i in range(len(label)):
             if label[i] == adv_labels[i]:
               print(f"failed on an image of {classes[label[i]]}")
-              save_image(original_input[i].cpu(), "../original_img/"+str(namecounter)+classes[label[i]]+".png")
+              save_image(data[i].cpu(), "../original_img/"+str(namecounter)+classes[label[i]]+".png")
               print(f"saving img NO. {namecounter}")
               save_image(advinputs[i].cpu(), "../adv_img/"+str(namecounter)+classes[adv_labels[i]]+".png")
               namecounter += 1
           
-          # if num_examples >= 20:
-          #   break
+          if num_examples >= max_img:
+            break
       print(f"Metrics: \n Attack Success Rate for epsilon {e}, step size {s} = {success / num_examples}, diff mean: {np.mean(mean)}")
 
-    # # for matrix case
-    # # ======================== #
-    # for data, label in tqdm(trainloader):
-    #     original_output = model(data)
-    #     # for cifar10 ViT
-    #     # original_output = original_output[0]
-    #     # print(original_output)
-    #     original_label = torch.argmax(original_output, dim=1)
-    #     adv_inputs, original_input = atk(data, original_label)
-    #     adv_output = model(adv_inputs)
-    #     print(original_output)
-    #     print(adv_output)
-    #     # for cifar10 Vit
-    #     # adv_output = adv_output[0]
-    #     adv_labels = torch.argmax(adv_output, dim=1)
-    #     logline = "results for image NO." + str(max(namecounter, original_count)) + " to NO." +str(max(namecounter, original_count)+batch_size)
-    #     num_examples += len(label)
-    #     success += torch.sum(adv_labels!=original_label).item()
-    #     print(f"Generated {num_examples} adversarial images, success in {success}")
 
-    #     gt_label_for_output = [classes[str(i.item())] for i in label]
-    #     gt_label_log = "original labels: "
-    #     for item in gt_label_for_output:
-    #         gt_label_log = gt_label_log + " " + str(item) 
-
-    #     ori_label_for_output = [classes[str(i.item())] for i in original_label]
-    #     ori_label_log = "original labels: "
-    #     for item in ori_label_for_output:
-    #         ori_label_log = ori_label_log + " " + str(item) 
-    #     adv_label_for_output = [classes[str(i.item())] for i in adv_labels]
-    #     adv_label_log = "adversarial labels: "
-    #     for item in adv_label_for_output:
-    #         adv_label_log = adv_label_log + " " + str(item) 
-
-    #     # print(gt_label_log)
-    #     print(ori_label_log)
-    #     print(adv_label_log)
-    #     # save soft label output for debug purpose
-    #     f.write(logline+'\n')
-    #     # np.savetxt(f, original_output.detach().numpy())
-    #     # np.savetxt(f, adv_output.detach().cpu().numpy())
-    #     # f.write(gt_label_log+'\n')
-    #     f.write(ori_label_log+'\n')
-    #     f.write(adv_label_log+'\n')
-    #     f.write("================================\n")
-
-    #     # _, axarr = plt.subplots(2, batch_size)
-    #     for i in range(batch_size):
-    #         # save images
-    #         save_image(original_input[i].cpu(), "../original_img/"+str(namecounter)+".png")
-    #         print(f"saving img NO. {namecounter}")
-    #         save_image(adv_inputs[i].cpu(), "../adv_img/"+str(namecounter)+".png")
-    #         # visualize images
-    #         # axarr[0, i].imshow(original_input[i].cpu().permute(1, 2, 0))
-    #         # axarr[1, i].imshow(adv_inputs[i].cpu().permute(1, 2, 0))
-    #         namecounter += 1
-    #     # plt.show()
-
-    #     if num_examples >= 10*batch_size:
-    #         break
-
-    # print(f"Metrics: \n Attack Success Rate = {success / num_examples}")
-
-    # f.close()
-    # # ======================== #
-
-    # for tensor case
-    # ======================= #
     # img = Image.open("../test.jpeg")
     # inputs = transform(img)[None, ]
-    # stackedinputs = torch.stack([inputs, inputs]).squeeze(dim=1)
+    # stackedinputs = torch.stack([inputs, inputs, inputs, inputs, inputs, inputs, inputs, inputs]).squeeze(dim=1).cuda()
     # out = model(stackedinputs)
     # clsidx = torch.argmax(out, dim=1)
     # # print(f"original prediction: {clsidx}")
-    # atk = ShampooAttackViT_tensor(model, 224, 16, steps=20, perturb_bound=0.05, lr=10)
-    # advinputs, original_input = atk(stackedinputs, clsidx)
-    # # print(torch.eq(inputs, original_input))
-    # out2 = model(advinputs)
-    # clsidx2 = torch.argmax(out2, dim=1)
-    # print(f"original prediction: {clsidx}, new prediction: {clsidx2}")
-    # print(out)
-    # print(out2)
-    # ====================== #
-
-    # for opt case
-    # ======================= #
-    # img = Image.open("../test.jpeg")
-    # inputs = transform(img)[None, ]
-    # stackedinputs = torch.stack([inputs, inputs, inputs, inputs, inputs, inputs, inputs, inputs]).squeeze(dim=1)
-    # out = model(stackedinputs)
-    # clsidx = torch.argmax(out, dim=1)
-    # # print(f"original prediction: {clsidx}")
-    # atk = ShampooAttackViT_opt(model, 224, 16, steps=20, perturb_bound=0.05)
-    # atk_vanilla = ShampooAttackViT(model, 224, 16, steps=20, perturb_bound=0.05)
+    # atk = ShampooAttackViT_opt(model, 224, 16, steps=20, perturb_bound=2/255)
+    # atk_vanilla = ShampooAttackViT(model, 224, 16, steps=20, perturb_bound=2/255)
     # s_atk = time.time()
     # advinputs, original_input = atk(stackedinputs, clsidx)
     # e_atk = time.time()
-    # advinputs_vanilla, _ = atk_vanilla(stackedinputs, clsidx)
+    # advinputs_vanilla, original_input_vanilla = atk_vanilla(stackedinputs, clsidx)
     # print(f"vanilla attack for 4 img costs {time.time()-e_atk}")
     # print(f"attack for 4 img costs {e_atk-s_atk}")
     # # print(torch.eq(inputs, original_input))
     # out2 = model(advinputs)
     # clsidx2 = torch.argmax(out2, dim=1)
-    # print(f"original prediction: {clsidx}, new prediction: {clsidx2}")
+    # out2_vanilla = model(advinputs_vanilla)
+    # clsidx2_vanilla = torch.argmax(out2_vanilla, dim=1)
+    # print(f"opt: original prediction: {clsidx}, new prediction: {clsidx2}")
+    # print(f"vanilla: original prediction: {clsidx}, new prediction: {clsidx2_vanilla}")
     # print(out)
     # print(out2)
-    # # ====================== #
+    # print(out2_vanilla)
 
-    # f, axarr = plt.subplots(1, 2)
-    # axarr[0].imshow(inputs[0].permute(1, 2, 0))
-    # axarr[1].imshow(advinputs[0].permute(1, 2, 0))
-    # plt.show()
-
-    # f.close()
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument("--PGD", type=int, default=0, help="to use PGD bench mark or not")
+    parser.add_argument("--eps_low", type=float, default=2, help="test eps starts from arg/255")
+    parser.add_argument("--nstep", type=int, default=3, \
+      help="number of times to multiply eps by 2 for testing, eg eps_low=2/255 nstep=3 will test on eps=[2/255,4/255,8/255]")
+    parser.add_argument("--max_img", type=int, default=10000, help="number of images to attack for each set of parameter")
+    parser.add_argument("--iter", type=int, default=10, help="number of iterations in PGD or Shampoo attack")
+    args = parser.parse_args()
+    benchmark = False
+    if args.PGD == 1:
+      benchmark = True
+    eps = [(args.eps_low/255)*i for i in range(1,args.nstep+1)]
+    run(benchmark, eps, args.max_img)
