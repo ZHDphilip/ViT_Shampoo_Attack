@@ -9,7 +9,7 @@ def _matrix_power(matrix, power):
     # use CPU for svd for speed up
     matrix = matrix.cpu()
     u, s, v = torch.svd(matrix)
-    return (u @ s.pow_(power).diag() @ v.t())#.cuda()
+    return (u @ s.pow_(power).diag() @ v.t()).cuda()
 
 class ShampooAttackViT(Attack):
     '''
@@ -33,6 +33,7 @@ class ShampooAttackViT(Attack):
 
         self.steps=steps
         self.perturb_bound = perturb_bound
+        print(self.device)
         # in total self.patch_num_side ** 2 patches
     
 
@@ -46,6 +47,7 @@ class ShampooAttackViT(Attack):
         loss = nn.CrossEntropyLoss()
 
         advimages = images.clone().detach().to(self.device)
+
         # print(advimages.shape)
 
         # split images into patches
@@ -69,6 +71,7 @@ class ShampooAttackViT(Attack):
         for _ in range(self.steps):
             advimages.requires_grad = True
             outputs = self.model(advimages)
+
             #outlabels = torch.argmax(outputs)
 
             if self._targeted:
@@ -105,7 +108,7 @@ class ShampooAttackViT(Attack):
                             advimages[i, 2, j*self.patch_sidelen:(j+1)*self.patch_sidelen, k*self.patch_sidelen:(k+1)*self.patch_sidelen] \
                             + self.lr * _matrix_power(preconds[i][j][k][2], -1/4) @ gradient_block[2, :, :] @ _matrix_power(preconds[i][j][k][5], -1/4)     # update Blue Channel
             
-            delta = torch.clamp(advimages-images, min=-self.perturb_bound, max=self.perturb_bound)
+            delta = torch.clamp(advimages-images, min=-self.perturb_bound, max=self.perturb_bound).to(self.device)
             advimages = images + delta
         # print(advimages-images)
         # print(torch.max(advimages-images))

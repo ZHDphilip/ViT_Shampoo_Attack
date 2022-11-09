@@ -129,10 +129,10 @@ class ShampooAttackViT_Tensor(Attack):
             # print(f"grad shape: {grad.shape}")
             advimages = apply_reshape_backward(advimages, self.patch_num_side, self.patch_sidelen)
             delta = torch.clamp(advimages-images, min=-self.perturb_bound, max=self.perturb_bound)
-            advimages = images + delta
+            advimages = torch.clamp(images + delta, min=0, max=1)
         # # print(advimages-images)
         # # print(torch.max(advimages-images))
         # # assert torch.max(advimages - images) <= self.perturb_bound
-        print(advimages-images)
-        print(torch.max(advimages-images))
-        return advimages, images
+        # print(advimages-images)
+        # print(torch.max(advimages-images))
+        return advimages

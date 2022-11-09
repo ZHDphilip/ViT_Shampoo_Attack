@@ -9,9 +9,11 @@ from attack import Attack
 
 def _matrix_power(matrix, power):
     # use CPU for svd for speed up
-    matrix = matrix.cpu()
+    # matrix = matrix.cpu()
     u, s, v = torch.svd(matrix)
-    return (u @ s.pow_(power).diag() @ v.t())#.cuda()
+    # return (u @ s.pow_(power).diag() @ torch.transpose(v, dim0=1, dim1=2))#.cuda()
+    return torch.matmul(torch.matmul(u, torch.diag_embed(s)), v.mT)
+
 
 def _batch_matrix_power(matrix, power):
     # print(matrix.shape)
@@ -22,10 +24,11 @@ def _batch_matrix_power(matrix, power):
     #             ret[i,j,k,:,:] = _matrix_power(matrix[i,j,k,:,:], power)
 
     ret = matrix.view(-1, matrix.shape[-2], matrix.shape[-1])
-    res = torch.zeros_like(ret)
-    for i in range(len(ret)):
-      res[i] = _matrix_power(ret[i], power)
-    res = res.view(matrix.shape)
+    res = _matrix_power(ret, power).view(matrix.shape)
+    # for i in range(len(ret)):
+    #   res[i] = _matrix_power(ret[i], power)
+    # res = res.view(matrix.shape).cuda()
+    # ret.apply_(lambda x: _matrix_power(x,power)).view(matrix.shape).cuda()
 
     return res
 
@@ -41,7 +44,7 @@ class ShampooAttackViT_opt(Attack):
     We formulate the problem by abstracting the image as a set of parameters
     For each patch in the image, we intialize a separate Precondition Tensor H, analogous to the per-layer H in neural networks
     '''
-    def __init__(self, model, image_dim, patch_sidelen, lr=1e-1, momentum=0, weight_decay=0, epsilon=0.007, update_freq=1, steps=40, perturb_bound=0.05):
+    def __init__(self, model, image_dim, patch_sidelen, lr=1e-1, momentum=0, weight_decay=0, epsilon=0.007, update_freq=1, steps=40, perturb_bound=0.05, scale=1):
         assert image_dim % patch_sidelen == 0
         super().__init__("ShampooAttachViT", model)
         self.lr = lr
@@ -57,6 +60,7 @@ class ShampooAttackViT_opt(Attack):
 
         self.steps=steps
         self.perturb_bound = perturb_bound
+        self.scale = scale
         # in total self.patch_num_side ** 2 patches
     
 
@@ -70,6 +74,13 @@ class ShampooAttackViT_opt(Attack):
         loss = nn.CrossEntropyLoss()
 
         advimages = images.clone().detach().to(self.device)
+
+        advimages = advimages + torch.empty_like(advimages).uniform_(-self.perturb_bound*self.scale, self.perturb_bound*self.scale)
+        if self.scale == 1:
+          minimum = 0 
+        else:
+          minimum = -1
+        advimages = torch.clamp(advimages, min=minimum, max=1).detach()
         # print(advimages.shape)
 
         # split images into patches
@@ -87,10 +98,9 @@ class ShampooAttackViT_opt(Attack):
 
         for _ in range(self.steps):
             advimages.requires_grad = True
+
             outputs = self.model(advimages)
-            # for cifar10 model
-            # outputs = outputs[0]
-            #outlabels = torch.argmax(outputs)
+
             if self._targeted:
                 cost = -loss(outputs, target_labels)
             else:
@@ -98,56 +108,30 @@ class ShampooAttackViT_opt(Attack):
 
             grad = torch.autograd.grad(cost, advimages,
                     retain_graph=False, create_graph=False)[0].to(self.device)
-            # print(f"grad shape: {grad.shape}")
             
             advimages.requires_grad = False
 
             grad_new = apply_reshape_forward(grad, self.patch_num_side, self.patch_sidelen)
-            # print(grad_new.shape)
-            original_size = grad.size()
+
             advimages = apply_reshape_forward(advimages, self.patch_num_side, self.patch_sidelen)
 
             # update L/R (RGB)
             for i in range(3):
-                # tmp = grad_new[:,i,:,:]
-                # print(tmp.shape)
-                # tmp2 = torch.transpose(grad_new[:,i,:,:], dim0=3, dim1=4)
-                # print(tmp2.shape)
-                # tmp3 = tmp @ tmp2
-                # print(tmp3.shape)
-                # tmp4 = tmp[0,0,0,:,:] @ tmp2[0,0,0,:,:]
                 preconds_L[:,:,:,i] = preconds_L[:,:,:,i] + grad_new[:,i,:,:] @ torch.transpose(grad_new[:,i,:,:], dim0=3, dim1=4)
                 preconds_R[:,:,:,i] = preconds_R[:,:,:,i] + grad_new[:,i,:,:] @ torch.transpose(grad_new[:,i,:,:], dim0=3, dim1=4)
                 advimages[:,i,:,:] = advimages[:,i,:,:] + \
                     self.lr * torch.sign(_batch_matrix_power(preconds_L[:,:,:,i], -1/4) @ grad_new[:,i,:,:] @ _batch_matrix_power(preconds_R[:,:,:,i], -1/4))
-
+            # t3 = time.time()
+            # print(f"end of loop: {t3-t1}")
             advimages = apply_reshape_backward(advimages, self.patch_num_side, self.patch_sidelen)
-            # for i in range(advimages.shape[0]):
-            #     for j in range(self.patch_num_side):
-            #         for k in range(self.patch_num_side):
-            #             gradient_block = grad[i, :, j*self.patch_sidelen:(j+1)*self.patch_sidelen, k*self.patch_sidelen:(k+1)*self.patch_sidelen]
-            # #             # print(f"Update Iteration: {_+1}, image NO.{i+1}, patch NO.{j+1}-{k+1} -- {self.patch_num_side}-{self.patch_num_side}")
-            # #             preconds_L[i][j][k][0] = preconds_L[i][j][k][0] + gradient_block[0, :, :] @ gradient_block[0, :, :].t()   # update L Red
-            # #             preconds_L[i][j][k][1] = preconds_L[i][j][k][1] + gradient_block[1, :, :] @ gradient_block[1, :, :].t()   # update L Green
-            # #             preconds_L[i][j][k][2] = preconds_L[i][j][k][2] + gradient_block[2, :, :] @ gradient_block[2, :, :].t()   # update L Blue
-            # #             preconds_R[i][j][k][0] = preconds_R[i][j][k][0] + gradient_block[0, :, :].t() @ gradient_block[0, :, :]     # update R Red
-            # #             preconds_R[i][j][k][1] = preconds_R[i][j][k][1] + gradient_block[1, :, :].t() @ gradient_block[1, :, :]     # update R Green
-            # #             preconds_R[i][j][k][2] = preconds_R[i][j][k][2] + gradient_block[2, :, :].t() @ gradient_block[2, :, :]     # update R Blue
-            # #             # print(advimages[i, 0, j*self.patch_sidelen:(j+1)*self.patch_sidelen, k*self.patch_sidelen:(k+1)*self.patch_sidelen].shape)
-            # #             # print((self.epsilon * _matrix_power(preconds[i][j][k][0], -1/4) @ gradient_block[:, :, 0] @ _matrix_power(preconds[i][j][k][3], -1/4)).shape)
-            #             advimages[i, 0, j*self.patch_sidelen:(j+1)*self.patch_sidelen, k*self.patch_sidelen:(k+1)*self.patch_sidelen] = \
-            #                 advimages[i, 0, j*self.patch_sidelen:(j+1)*self.patch_sidelen, k*self.patch_sidelen:(k+1)*self.patch_sidelen] \
-            #                 + self.lr * _matrix_power(preconds_L[i][j][k][0], -1/4) @ gradient_block[0, :, :] @ _matrix_power(preconds_R[i][j][k][0], -1/4)     # update Red Channel
-            #             advimages[i, 1, j*self.patch_sidelen:(j+1)*self.patch_sidelen, k*self.patch_sidelen:(k+1)*self.patch_sidelen] = \
-            #                 advimages[i, 1, j*self.patch_sidelen:(j+1)*self.patch_sidelen, k*self.patch_sidelen:(k+1)*self.patch_sidelen] \
-            #                 + self.lr * _matrix_power(preconds_L[i][j][k][1], -1/4) @ gradient_block[1, :, :] @ _matrix_power(preconds_R[i][j][k][1], -1/4)     # update Green Channel
-            #             advimages[i, 2, j*self.patch_sidelen:(j+1)*self.patch_sidelen, k*self.patch_sidelen:(k+1)*self.patch_sidelen] = \
-            #                 advimages[i, 2, j*self.patch_sidelen:(j+1)*self.patch_sidelen, k*self.patch_sidelen:(k+1)*self.patch_sidelen] \
-            #                 + self.lr * _matrix_power(preconds_L[i][j][k][2], -1/4) @ gradient_block[2, :, :] @ _matrix_power(preconds_R[i][j][k][2], -1/4)     # update Blue Channel
             
-            delta = torch.clamp(advimages-images, min=-self.perturb_bound, max=self.perturb_bound)
-            advimages = images + delta
+            delta = torch.clamp(advimages-images, min=-self.perturb_bound * self.scale, max=self.perturb_bound * self.scale)
+            advimages = torch.clamp(images + delta, min=minimum, max=1)
+            
+            # t4 = time.time()
+            # print(f"iteration ends {t4-t1}")
+        
         # print(advimages-images)
         # print(torch.max(advimages-images))
         # assert torch.max(advimages - images) <= self.perturb_bound
-        return advimages, images
+        return advimages
